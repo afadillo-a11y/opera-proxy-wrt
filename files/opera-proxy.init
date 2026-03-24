@@ -1,0 +1,72 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=10
+USE_PROCD=1
+
+NAME="opera-proxy"
+PROG="/usr/bin/opera-proxy"
+CFG="opera-proxy"
+
+service_triggers() {
+	procd_add_reload_trigger "$CFG"
+}
+
+start_service() {
+	local enabled socks_mode
+	local country bind_address verbosity timeout
+	local init_retries init_retry_interval refresh refresh_retry
+	local server_selection server_selection_timeout
+	local proxy api_proxy cafile fake_sni override_proxy_address
+
+	config_load "$CFG"
+
+	config_get_bool enabled main enabled 1
+	[ "$enabled" -eq 1 ] || return 0
+
+	config_get country main country 'EU'
+	config_get bind_address main bind_address '127.0.0.1:18080'
+	config_get_bool socks_mode main socks_mode 0
+	config_get verbosity main verbosity '20'
+	config_get timeout main timeout '10s'
+	config_get init_retries main init_retries '0'
+	config_get init_retry_interval main init_retry_interval '5s'
+	config_get refresh main refresh '4h'
+	config_get refresh_retry main refresh_retry '5s'
+	config_get server_selection main server_selection 'fastest'
+	config_get server_selection_timeout main server_selection_timeout '30s'
+	config_get proxy main proxy ''
+	config_get api_proxy main api_proxy ''
+	config_get cafile main cafile ''
+	config_get fake_sni main fake_sni ''
+	config_get override_proxy_address main override_proxy_address ''
+
+	procd_open_instance
+	procd_set_param command "$PROG"
+	procd_append_param command -country "$country"
+	procd_append_param command -bind-address "$bind_address"
+	procd_append_param command -verbosity "$verbosity"
+	procd_append_param command -timeout "$timeout"
+	procd_append_param command -init-retries "$init_retries"
+	procd_append_param command -init-retry-interval "$init_retry_interval"
+	procd_append_param command -refresh "$refresh"
+	procd_append_param command -refresh-retry "$refresh_retry"
+	procd_append_param command -server-selection "$server_selection"
+	procd_append_param command -server-selection-timeout "$server_selection_timeout"
+
+	[ "$socks_mode" -eq 1 ] && procd_append_param command -socks-mode
+	[ -n "$proxy" ] && procd_append_param command -proxy "$proxy"
+	[ -n "$api_proxy" ] && procd_append_param command -api-proxy "$api_proxy"
+	[ -n "$cafile" ] && procd_append_param command -cafile "$cafile"
+	[ -n "$fake_sni" ] && procd_append_param command -fake-SNI "$fake_sni"
+	[ -n "$override_proxy_address" ] && procd_append_param command -override-proxy-address "$override_proxy_address"
+
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+stop_service() {
+	return 0
+}
