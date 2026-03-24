@@ -30,10 +30,10 @@ jobs:
           elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             echo "VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
           else
-            echo "VERSION=nightly" >> "$GITHUB_ENV"
+            echo "VERSION=master" >> "$GITHUB_ENV"
           fi
 
-          echo "UPSTREAM_REPO=Snawoot/opera-proxy" >> "$GITHUB_ENV"
+          echo "UPSTREAM_REPO=Alexey71/opera-proxy" >> "$GITHUB_ENV"
           echo "PKG_NAME=opera-proxy" >> "$GITHUB_ENV"
           echo "BIN_NAME=opera-proxy" >> "$GITHUB_ENV"
           echo "OUT_BIN=opera-proxy-aarch64-musl" >> "$GITHUB_ENV"
@@ -41,12 +41,33 @@ jobs:
       - name: Checkout local repository
         uses: actions/checkout@v4
 
-      - name: Checkout upstream repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.UPSTREAM_REPO }}
-          ref: ${{ env.VERSION }}
-          path: upstream_src
+      - name: Clone upstream repository
+        run: |
+          set -euxo pipefail
+
+          REPO="https://github.com/${UPSTREAM_REPO}.git"
+          REF="${VERSION}"
+
+          rm -rf upstream_src
+          git clone --depth 1 "$REPO" upstream_src
+
+          cd upstream_src
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${REF}" >/dev/null 2>&1; then
+            git fetch --depth 1 origin "refs/tags/${REF}:refs/tags/${REF}"
+            git checkout -q "tags/${REF}"
+          elif git ls-remote --exit-code --heads origin "${REF}" >/dev/null 2>&1; then
+            git fetch --depth 1 origin "${REF}"
+            git checkout -q FETCH_HEAD
+          else
+            echo "Requested ref '${REF}' not found in ${UPSTREAM_REPO}"
+            echo "Recent refs:"
+            git ls-remote --heads --tags origin | tail -n 50
+            exit 1
+          fi
+
+          git rev-parse --short HEAD
+          git status --short --branch
 
       - name: Setup Go from upstream go.mod
         uses: actions/setup-go@v5
@@ -57,8 +78,9 @@ jobs:
       - name: Install packaging and compression tools
         run: |
           set -euxo pipefail
+
           sudo apt-get update
-          sudo apt-get install -y jq dos2unix upx-ucl file
+          sudo apt-get install -y jq dos2unix upx-ucl file binutils
 
           NFPM_TAG=$(curl -sL https://api.github.com/repos/goreleaser/nfpm/releases/latest | jq -r .tag_name)
           NFPM_VER=${NFPM_TAG#v}
@@ -68,6 +90,7 @@ jobs:
       - name: Build minimal arm64 binary
         run: |
           set -euxo pipefail
+
           cd upstream_src
 
           export CGO_ENABLED=0
@@ -85,6 +108,7 @@ jobs:
             .
 
           cd ..
+
           file "${OUT_BIN}"
           ls -lh "${OUT_BIN}"
 
@@ -101,6 +125,10 @@ jobs:
       - name: Normalize package files
         run: |
           set -euxo pipefail
+
+          test -f "files/${PKG_NAME}.init"
+          test -f "files/${PKG_NAME}.config"
+
           dos2unix "files/${PKG_NAME}.init" "files/${PKG_NAME}.config"
 
       - name: Create package lifecycle scripts
@@ -137,7 +165,7 @@ jobs:
           echo ""
           echo "=============================================================="
           echo " opera-proxy installed"
-          echo " Local upstream proxy: 127.0.0.1:18080"
+          echo " Local HTTP proxy: 127.0.0.1:18080"
           echo " Config: /etc/config/opera-proxy"
           echo " Init:   /etc/init.d/opera-proxy"
           echo "=============================================================="
@@ -214,6 +242,8 @@ jobs:
               --target "${PKG_NAME}_${PKG_VER}_${ARCH}.ipk"
           done
 
+          unset SOURCE_DATE_EPOCH
+
           for ARCH in "${ARCHS[@]}"; do
             cat > nfpm_apk.yaml <<EOF
           name: ${PKG_NAME}
@@ -270,7 +300,7 @@ jobs:
           if gh release view "$TAG" -R "${UPSTREAM_REPO}" --json body,name >/tmp/upstream_release.json 2>/dev/null; then
             jq -r '.body // ""' /tmp/upstream_release.json > .release/body.txt
           else
-            printf 'Build of %s\n' "$TAG" > .release/body.txt
+            printf 'Build of %s from %s\n' "$TAG" "${UPSTREAM_REPO}" > .release/body.txt
           fi
 
       - name: Create or update GitHub Release
