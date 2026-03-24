@@ -276,7 +276,7 @@ jobs:
                   "/bin/pidof": [ "exec" ],
                   "/sbin/logread": [ "exec" ],
                   "/usr/bin/opera-proxy": [ "exec" ],
-                  "/proc/%": [ "read" ]
+                  "/proc/*/status": [ "read" ]
                 }
               },
               "write": {
