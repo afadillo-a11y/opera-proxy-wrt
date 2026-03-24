@@ -1,0 +1,864 @@
+name: Build and Release Opera Proxy (LuCI AIO)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Git ref to build (tag, branch or commit SHA)'
+        required: true
+        default: 'master'
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    env:
+      PKG_NAME: luci-app-opera-proxy
+      BIN_NAME: opera-proxy
+      SERVICE_NAME: opera-proxy
+      UPSTREAM_REPO: Alexey71/opera-proxy
+
+    steps:
+      - name: Checkout local repository
+        uses: actions/checkout@v4
+
+      - name: Resolve Version Metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REF_RAW="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}"
+          VERSION="${REF_RAW#v}"
+
+          if [[ -z "${VERSION}" || "${VERSION}" == "master" || "${VERSION}" == "main" ]]; then
+            VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"
+            RELEASE_TAG="opera-proxy-${VERSION}"
+          elif [[ "${REF_RAW}" == v* ]]; then
+            RELEASE_TAG="${REF_RAW}"
+          else
+            RELEASE_TAG="opera-proxy-${VERSION}-${GITHUB_RUN_NUMBER}"
+          fi
+
+          {
+            echo "REF_RAW=${REF_RAW}"
+            echo "VERSION=${VERSION}"
+            echo "RELEASE_TAG=${RELEASE_TAG}"
+          } >> "$GITHUB_ENV"
+
+      - name: Clone upstream repository
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          REPO="https://github.com/${UPSTREAM_REPO}.git"
+          REF="${REF_RAW}"
+
+          rm -rf src
+          git clone --depth 1 "$REPO" src
+          cd src
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${REF}" >/dev/null 2>&1; then
+            git fetch --depth 1 origin "refs/tags/${REF}:refs/tags/${REF}"
+            git checkout -q "tags/${REF}"
+          elif git ls-remote --exit-code --heads origin "${REF}" >/dev/null 2>&1; then
+            git fetch --depth 1 origin "${REF}"
+            git checkout -q FETCH_HEAD
+          else
+            echo "Requested ref '${REF}' not found in ${UPSTREAM_REPO}"
+            echo "Recent refs:"
+            git ls-remote --heads --tags origin | tail -n 50
+            exit 1
+          fi
+
+          git rev-parse --short HEAD
+          git status --short --branch
+
+      - name: Setup Go from upstream go.mod
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - name: Install System Dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl dos2unix jq curl tar xz-utils file binutils
+
+          NFPM_VER="2.43.1"
+          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VER}/nfpm_${NFPM_VER}_Linux_x86_64.tar.gz" | tar -xz
+          sudo install -m 0755 nfpm /usr/local/bin/nfpm
+
+      - name: Build Binary (Aggressive Optimization)
+        shell: bash
+        working-directory: src
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: arm64
+        run: |
+          set -euxo pipefail
+
+          go mod download
+
+          go build \
+            -trimpath \
+            -buildvcs=false \
+            -tags 'netgo osusergo' \
+            -ldflags='-s -w -buildid=' \
+            -o "${GITHUB_WORKSPACE}/${BIN_NAME}" \
+            .
+
+          test -f "${GITHUB_WORKSPACE}/${BIN_NAME}"
+          strip --strip-unneeded "${GITHUB_WORKSPACE}/${BIN_NAME}" || true
+          upx --best --lzma "${GITHUB_WORKSPACE}/${BIN_NAME}" || true
+
+          file "${GITHUB_WORKSPACE}/${BIN_NAME}"
+          ls -lh "${GITHUB_WORKSPACE}/${BIN_NAME}"
+
+      - name: Generate Package Files
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          PKGROOT="${GITHUB_WORKSPACE}/pkgroot"
+
+          mkdir -p \
+            "${PKGROOT}/etc/config" \
+            "${PKGROOT}/etc/init.d" \
+            "${PKGROOT}/usr/share/luci/menu.d" \
+            "${PKGROOT}/usr/share/rpcd/acl.d" \
+            "${PKGROOT}/www/luci-static/resources/view/opera-proxy"
+
+          cat > "${PKGROOT}/etc/config/opera-proxy" <<'EOF'
+          config opera_vpn 'main'
+              option enabled '1'
+              option country 'EU'
+              option bind_host '127.0.0.1'
+              option bind_port '18080'
+              option socks_mode '1'
+              option verbosity '20'
+              option timeout '10s'
+              option init_retries '0'
+              option init_retry_interval '5s'
+              option refresh '4h'
+              option refresh_retry '5s'
+              option server_selection 'fastest'
+              option server_selection_timeout '30s'
+              option proxy ''
+              option api_proxy ''
+              option cafile ''
+              option fake_sni ''
+              option override_proxy_address ''
+          EOF
+
+          cat > "${PKGROOT}/etc/init.d/opera-proxy" <<'EOF'
+          #!/bin/sh /etc/rc.common
+
+          START=95
+          STOP=15
+          USE_PROCD=1
+
+          SERVICE_NAME="opera-proxy"
+          BIN_PATH="/usr/bin/opera-proxy"
+          CFG="opera-proxy"
+
+          service_triggers() {
+              procd_add_reload_trigger "$CFG"
+          }
+
+          start_service() {
+              local enabled socks_mode
+              local country bind_host bind_port bind_address
+              local verbosity timeout init_retries init_retry_interval
+              local refresh refresh_retry server_selection server_selection_timeout
+              local proxy api_proxy cafile fake_sni override_proxy_address
+
+              config_load "$CFG"
+              config_get_bool enabled main enabled 1
+              [ "$enabled" -eq 1 ] || return 0
+
+              config_get country main country 'EU'
+              config_get bind_host main bind_host '127.0.0.1'
+              config_get bind_port main bind_port '18080'
+              config_get_bool socks_mode main socks_mode 1
+              config_get verbosity main verbosity '20'
+              config_get timeout main timeout '10s'
+              config_get init_retries main init_retries '0'
+              config_get init_retry_interval main init_retry_interval '5s'
+              config_get refresh main refresh '4h'
+              config_get refresh_retry main refresh_retry '5s'
+              config_get server_selection main server_selection 'fastest'
+              config_get server_selection_timeout main server_selection_timeout '30s'
+              config_get proxy main proxy ''
+              config_get api_proxy main api_proxy ''
+              config_get cafile main cafile ''
+              config_get fake_sni main fake_sni ''
+              config_get override_proxy_address main override_proxy_address ''
+
+              bind_address="${bind_host}:${bind_port}"
+
+              procd_open_instance main
+              procd_set_param command "$BIN_PATH"
+              procd_append_param command -country "$country"
+              procd_append_param command -bind-address "$bind_address"
+              procd_append_param command -verbosity "$verbosity"
+              procd_append_param command -timeout "$timeout"
+              procd_append_param command -init-retries "$init_retries"
+              procd_append_param command -init-retry-interval "$init_retry_interval"
+              procd_append_param command -refresh "$refresh"
+              procd_append_param command -refresh-retry "$refresh_retry"
+              procd_append_param command -server-selection "$server_selection"
+              procd_append_param command -server-selection-timeout "$server_selection_timeout"
+
+              [ "$socks_mode" -eq 1 ] && procd_append_param command -socks-mode
+              [ -n "$proxy" ] && procd_append_param command -proxy "$proxy"
+              [ -n "$api_proxy" ] && procd_append_param command -api-proxy "$api_proxy"
+              [ -n "$cafile" ] && procd_append_param command -cafile "$cafile"
+              [ -n "$fake_sni" ] && procd_append_param command -fake-SNI "$fake_sni"
+              [ -n "$override_proxy_address" ] && procd_append_param command -override-proxy-address "$override_proxy_address"
+
+              procd_set_param respawn 3600 5 5
+              procd_set_param stdout 1
+              procd_set_param stderr 1
+              procd_close_instance
+          }
+
+          stop_service() {
+              return 0
+          }
+          EOF
+
+          cat > "${PKGROOT}/usr/share/luci/menu.d/luci-app-opera-proxy.json" <<'EOF'
+          {
+            "admin/services/opera-proxy": {
+              "title": "Opera Proxy",
+              "order": 90,
+              "action": {
+                "type": "view",
+                "path": "opera-proxy/config"
+              },
+              "depends": {
+                "acl": [ "luci-app-opera-proxy" ]
+              }
+            }
+          }
+          EOF
+
+          cat > "${PKGROOT}/usr/share/rpcd/acl.d/luci-app-opera-proxy.json" <<'EOF'
+          {
+            "luci-app-opera-proxy": {
+              "description": "Grant access to Opera Proxy configuration, runtime status and service control",
+              "read": {
+                "uci": [ "opera-proxy" ],
+                "ubus": {
+                  "file": [ "stat", "read", "exec" ]
+                },
+                "file": {
+                  "/bin/pidof": [ "exec" ],
+                  "/sbin/logread": [ "exec" ],
+                  "/usr/bin/opera-proxy": [ "exec" ],
+                  "/proc/%": [ "read" ]
+                }
+              },
+              "write": {
+                "uci": [ "opera-proxy" ],
+                "ubus": {
+                  "luci": [ "setInitAction" ]
+                }
+              }
+            }
+          }
+          EOF
+
+          cat > "${PKGROOT}/www/luci-static/resources/view/opera-proxy/config.js" <<'EOF'
+          'use strict';
+          'require view';
+          'require form';
+          'require rpc';
+          'require poll';
+          'require ui';
+          'require uci';
+          'require fs';
+
+          var callInitAction = rpc.declare({
+              object: 'luci',
+              method: 'setInitAction',
+              params: [ 'name', 'action' ],
+              expect: { result: false }
+          });
+
+          function badge(label, ok) {
+              return '<span style="display:inline-block;padding:2px 8px;border-radius:999px;font-weight:600;color:#fff;background:' +
+                  (ok ? '#16a34a' : '#dc2626') + '">' + label + '</span>';
+          }
+
+          function formatKBToMB(kb) {
+              var n = parseInt(kb, 10);
+              if (isNaN(n) || n < 0)
+                  return '-';
+              return (n / 1024).toFixed(1) + ' MB';
+          }
+
+          function csvUnquote(s) {
+              return String(s || '').replace(/^"|"$/g, '').replace(/""/g, '"');
+          }
+
+          function parseCountryCsv(text) {
+              var out = [];
+              var lines = String(text || '').trim().split(/\r?\n/);
+              var i;
+
+              for (i = 1; i < lines.length; i++) {
+                  var line = lines[i];
+                  if (!line)
+                      continue;
+
+                  var m = line.match(/^\s*"?([^",]+)"?\s*,\s*"?(.*?)"?\s*$/);
+                  if (!m)
+                      continue;
+
+                  out.push({ code: csvUnquote(m[1]), name: csvUnquote(m[2]) });
+              }
+
+              return out;
+          }
+
+          return view.extend({
+              _statusNode: null,
+              _logNode: null,
+              _actionNode: null,
+              _buttons: [],
+              _pollRegistered: false,
+              _countries: null,
+
+              load: function() {
+                  return Promise.all([
+                      uci.load('opera-proxy'),
+                      L.resolveDefault(fs.exec_direct('/usr/bin/opera-proxy', ['-list-countries'], 'text'), '')
+                  ]).then(L.bind(function(res) {
+                      var parsed = parseCountryCsv(res[1]);
+                      if (!parsed.length) {
+                          parsed = [
+                              { code: 'EU', name: 'Europe' },
+                              { code: 'AM', name: 'Americas' },
+                              { code: 'AS', name: 'Asia' }
+                          ];
+                      }
+                      this._countries = parsed;
+                      return res;
+                  }, this));
+              },
+
+              getPid: function() {
+                  return L.resolveDefault(fs.exec_direct('/bin/pidof', ['opera-proxy'], 'text'), '').then(function(txt) {
+                      var s = String(txt || '').trim().split(/\s+/)[0];
+                      return /^\d+$/.test(s) ? s : null;
+                  });
+              },
+
+              readProcStatusValue: function(pid, fieldName) {
+                  if (!pid)
+                      return Promise.resolve(null);
+
+                  return L.resolveDefault(fs.read_direct('/proc/' + pid + '/status'), '').then(function(txt) {
+                      var m = String(txt || '').match(new RegExp('^' + fieldName + ':\\s+([0-9]+)\\s+kB$', 'm'));
+                      return m ? m[1] : null;
+                  });
+              },
+
+              fetchRuntime: function() {
+                  return Promise.all([
+                      this.getPid(),
+                      uci.load('opera-proxy')
+                  ]).then(L.bind(function(res) {
+                      var pid = res[0];
+                      var mode = uci.get('opera-proxy', 'main', 'socks_mode') == '1' ? 'SOCKS5' : 'HTTP';
+                      var host = uci.get('opera-proxy', 'main', 'bind_host') || '127.0.0.1';
+                      var port = uci.get('opera-proxy', 'main', 'bind_port') || '18080';
+                      var country = uci.get('opera-proxy', 'main', 'country') || 'EU';
+
+                      return Promise.all([
+                          Promise.resolve(pid),
+                          Promise.resolve(mode),
+                          Promise.resolve(host + ':' + port),
+                          Promise.resolve(country),
+                          this.readProcStatusValue(pid, 'VmRSS'),
+                          this.readProcStatusValue(pid, 'VmSize')
+                      ]);
+                  }, this)).then(function(res) {
+                      return {
+                          pid: res[0],
+                          mode: res[1],
+                          bind: res[2],
+                          country: res[3],
+                          rssKb: res[4],
+                          vsizeKb: res[5]
+                      };
+                  });
+              },
+
+              renderStatusHtml: function(runtime) {
+                  var running = !!runtime.pid;
+                  return [
+                      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;align-items:stretch">',
+                        '<div style="padding:10px;border:1px solid #d1d5db;border-radius:10px;background:#fff">',
+                          '<div style="font-size:12px;color:#6b7280;margin-bottom:6px">' + _('Service state') + '</div>',
+                          '<div>' + badge(running ? _('Running') : _('Stopped'), running) + '</div>',
+                          '<div style="margin-top:8px"><strong>' + _('PID') + ':</strong> ' + (runtime.pid || '-') + '</div>',
+                          '<div style="margin-top:4px"><strong>' + _('RSS') + ':</strong> ' + formatKBToMB(runtime.rssKb) + '</div>',
+                        '</div>',
+                        '<div style="padding:10px;border:1px solid #d1d5db;border-radius:10px;background:#fff">',
+                          '<div style="font-size:12px;color:#6b7280;margin-bottom:6px">' + _('Proxy mode') + '</div>',
+                          '<div><strong>' + _('Mode') + ':</strong> ' + runtime.mode + '</div>',
+                          '<div style="margin-top:8px"><strong>' + _('Listen') + ':</strong> ' + runtime.bind + '</div>',
+                          '<div style="margin-top:4px"><strong>' + _('Country') + ':</strong> ' + runtime.country + '</div>',
+                        '</div>',
+                        '<div style="padding:10px;border:1px solid #d1d5db;border-radius:10px;background:#fff">',
+                          '<div style="font-size:12px;color:#6b7280;margin-bottom:6px">' + _('Process memory') + '</div>',
+                          '<div><strong>' + _('VmRSS') + ':</strong> ' + formatKBToMB(runtime.rssKb) + '</div>',
+                          '<div style="margin-top:8px"><strong>' + _('VmSize') + ':</strong> ' + formatKBToMB(runtime.vsizeKb) + '</div>',
+                          '<div style="margin-top:4px;color:#6b7280">' + _('Status is determined through pidof opera-proxy and /proc/<pid>/status.') + '</div>',
+                        '</div>',
+                      '</div>'
+                  ].join('');
+              },
+
+              refreshStatus: function() {
+                  if (!this._statusNode)
+                      return Promise.resolve();
+
+                  return this.fetchRuntime().then(L.bind(function(runtime) {
+                      this._statusNode.innerHTML = this.renderStatusHtml(runtime);
+                  }, this)).catch(function() {});
+              },
+
+              refreshLogs: function() {
+                  if (!this._logNode)
+                      return Promise.resolve();
+
+                  this._logNode.value = _('Refreshing logs...');
+
+                  return L.resolveDefault(fs.exec_direct('/sbin/logread', ['-e', 'opera-proxy'], 'text'), '')
+                      .then(L.bind(function(output) {
+                          this._logNode.value = String(output || '').trim() || _('No opera-proxy log entries yet.');
+                          this._logNode.scrollTop = this._logNode.scrollHeight;
+                      }, this))
+                      .catch(L.bind(function(err) {
+                          this._logNode.value = (err && err.message) ? err.message : _('Unable to read logs.');
+                      }, this));
+              },
+
+              setActionState: function(busy, text) {
+                  if (this._actionNode)
+                      this._actionNode.textContent = text || '';
+
+                  this._buttons.forEach(function(btn) {
+                      if (btn)
+                          btn.disabled = !!busy;
+                  });
+              },
+
+              handleServiceAction: function(action) {
+                  return ui.createHandlerFn(this, function() {
+                      this.setActionState(true, _('Executing action: ') + action + ' ...');
+
+                      return callInitAction('opera-proxy', action)
+                          .then(L.bind(function() {
+                              return new Promise(function(resolve) { window.setTimeout(resolve, 1500); });
+                          }, this))
+                          .then(L.bind(function() {
+                              return Promise.all([
+                                  this.refreshStatus(),
+                                  this.refreshLogs()
+                              ]);
+                          }, this))
+                          .then(L.bind(function() {
+                              this.setActionState(false, _('Last action completed: ') + action);
+                          }, this))
+                          .catch(L.bind(function(err) {
+                              this.setActionState(false, (err && err.message) ? err.message : _('Operation failed'));
+                              ui.addNotification(null, E('p', {}, (err && err.message) ? err.message : _('Operation failed')));
+                          }, this));
+                  });
+              },
+
+              render: function() {
+                  var m, s, o;
+                  var self = this;
+
+                  m = new form.Map('opera-proxy', _('Opera Proxy'),
+                      _('Builds a local Opera-based proxy service with LuCI control. The default package configuration starts the service as a SOCKS5 proxy on 127.0.0.1:18080.'));
+
+                  s = m.section(form.NamedSection, 'main', 'opera_vpn', _('Live Status'));
+
+                  o = s.option(form.DummyValue, '_status', _('Runtime state'),
+                      _('Shows service state, PID from pidof, current proxy mode, listen address and live memory usage from /proc.'));
+                  o.rawhtml = true;
+                  o.cfgvalue = function() {
+                      return '<div data-opera-proxy-status="1">' + _('Loading status...') + '</div>';
+                  };
+
+                  o = s.option(form.Button, '_start');
+                  o.title = _('Start service');
+                  o.inputtitle = _('Start');
+                  o.inputstyle = 'apply';
+                  o.onclick = this.handleServiceAction('start');
+
+                  o = s.option(form.Button, '_stop');
+                  o.title = _('Stop service');
+                  o.inputtitle = _('Stop');
+                  o.inputstyle = 'remove';
+                  o.onclick = this.handleServiceAction('stop');
+
+                  o = s.option(form.Button, '_restart');
+                  o.title = _('Restart service');
+                  o.inputtitle = _('Restart');
+                  o.inputstyle = 'apply';
+                  o.onclick = this.handleServiceAction('restart');
+
+                  o = s.option(form.DummyValue, '_action_state', _('Action result'));
+                  o.rawhtml = true;
+                  o.cfgvalue = function() {
+                      return '<div data-opera-proxy-action="1" style="min-height:1.4em;color:#6b7280">' + _('No action executed yet.') + '</div>';
+                  };
+
+                  s = m.section(form.NamedSection, 'main', 'opera_vpn', _('Main Settings'));
+
+                  o = s.option(form.Flag, 'enabled', _('Enable service at boot'));
+                  o.rmempty = false;
+
+                  o = s.option(form.ListValue, 'country', _('Country / region'));
+                  (this._countries || []).forEach(function(entry) {
+                      o.value(entry.code, entry.code + ' - ' + entry.name);
+                  });
+                  o.rmempty = false;
+                  o.default = 'EU';
+
+                  o = s.option(form.Flag, 'socks_mode', _('SOCKS5 mode'));
+                  o.default = '1';
+                  o.rmempty = false;
+                  o.enabled = '1';
+                  o.disabled = '0';
+                  o.description = _('Enabled = SOCKS5 proxy. Disabled = HTTP proxy.');
+
+                  o = s.option(form.Value, 'bind_port', _('Listen port'));
+                  o.datatype = 'port';
+                  o.rmempty = false;
+                  o.default = '18080';
+
+                  o = s.option(form.Value, 'bind_host', _('Listen host'));
+                  o.datatype = 'host';
+                  o.rmempty = false;
+                  o.default = '127.0.0.1';
+                  o.description = _('Use 127.0.0.1 for localhost-only access or 0.0.0.0 for LAN-wide access.');
+
+                  s = m.section(form.NamedSection, 'main', 'opera_vpn', _('Advanced Settings'));
+
+                  o = s.option(form.ListValue, 'server_selection', _('Server selection policy'));
+                  o.value('first', _('First available'));
+                  o.value('random', _('Random'));
+                  o.value('fastest', _('Fastest'));
+                  o.rmempty = false;
+                  o.default = 'fastest';
+
+                  o = s.option(form.Value, 'verbosity', _('Verbosity'));
+                  o.datatype = 'uinteger';
+                  o.rmempty = false;
+                  o.default = '20';
+                  o.description = _('10=debug, 20=info, 30=warning, 40=error, 50=critical');
+
+                  o = s.option(form.Value, 'timeout', _('Network timeout'));
+                  o.rmempty = false;
+                  o.default = '10s';
+
+                  o = s.option(form.Value, 'refresh', _('Refresh interval'));
+                  o.rmempty = false;
+                  o.default = '4h';
+
+                  o = s.option(form.Value, 'refresh_retry', _('Refresh retry interval'));
+                  o.rmempty = false;
+                  o.default = '5s';
+
+                  o = s.option(form.Value, 'init_retries', _('Initialization retries'));
+                  o.datatype = 'uinteger';
+                  o.rmempty = false;
+                  o.default = '0';
+                  o.description = _('0 means unlimited retry.');
+
+                  o = s.option(form.Value, 'init_retry_interval', _('Initialization retry interval'));
+                  o.rmempty = false;
+                  o.default = '5s';
+
+                  o = s.option(form.Value, 'server_selection_timeout', _('Server selection timeout'));
+                  o.rmempty = false;
+                  o.default = '30s';
+
+                  o = s.option(form.Value, 'proxy', _('Base proxy for outbound dial-outs'));
+                  o.datatype = 'string';
+                  o.rmempty = true;
+                  o.placeholder = 'socks5://127.0.0.1:1080';
+
+                  o = s.option(form.Value, 'api_proxy', _('Additional proxy for SurfEasy API'));
+                  o.datatype = 'string';
+                  o.rmempty = true;
+                  o.placeholder = 'http://127.0.0.1:8080';
+
+                  o = s.option(form.Value, 'cafile', _('Custom CA bundle file'));
+                  o.datatype = 'string';
+                  o.rmempty = true;
+                  o.placeholder = '/etc/ssl/certs/ca-certificates.crt';
+
+                  o = s.option(form.Value, 'fake_sni', _('Fake SNI'));
+                  o.datatype = 'hostname';
+                  o.rmempty = true;
+
+                  o = s.option(form.Value, 'override_proxy_address', _('Override proxy address'));
+                  o.datatype = 'hostport';
+                  o.rmempty = true;
+                  o.placeholder = '77.111.247.69:443';
+
+                  s = m.section(form.NamedSection, 'main', 'opera_vpn', _('Diagnostics'));
+
+                  o = s.option(form.DummyValue, '_diag', _('Live log output'));
+                  o.rawhtml = true;
+                  o.cfgvalue = function() {
+                      return [
+                          '<details style="margin-top:4px">',
+                          '<summary style="cursor:pointer;font-weight:600">' + _('Show opera-proxy logs') + '</summary>',
+                          '<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">',
+                          '<button type="button" class="btn cbi-button cbi-button-action" data-opera-proxy-refresh-logs="1">' + _('Refresh logs') + '</button>',
+                          '<span style="color:#6b7280">' + _('Runs: logread -e opera-proxy') + '</span>',
+                          '</div>',
+                          '<textarea data-opera-proxy-logs="1" readonly="readonly" wrap="off" style="margin-top:10px;width:100%;min-height:220px;font-family:monospace;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:10px"></textarea>',
+                          '</details>'
+                      ].join('');
+                  };
+
+                  return m.render().then(function(nodes) {
+                      self._statusNode = nodes.querySelector('[data-opera-proxy-status="1"]');
+                      self._actionNode = nodes.querySelector('[data-opera-proxy-action="1"]');
+                      self._logNode = nodes.querySelector('[data-opera-proxy-logs="1"]');
+                      self._buttons = Array.prototype.slice.call(nodes.querySelectorAll('.cbi-button'));
+                      var logBtn = nodes.querySelector('[data-opera-proxy-refresh-logs="1"]');
+
+                      if (logBtn) {
+                          logBtn.addEventListener('click', function(ev) {
+                              ev.preventDefault();
+                              self.refreshLogs();
+                          });
+                      }
+
+                      self.refreshStatus();
+                      self.refreshLogs();
+
+                      if (!self._pollRegistered) {
+                          poll.add(function() {
+                              return self.refreshStatus();
+                          }, 8);
+                          self._pollRegistered = true;
+                      }
+
+                      return nodes;
+                  });
+              }
+          });
+          EOF
+
+          chmod 0755 "${PKGROOT}/etc/init.d/opera-proxy"
+          dos2unix \
+            "${PKGROOT}/etc/config/opera-proxy" \
+            "${PKGROOT}/etc/init.d/opera-proxy" \
+            "${PKGROOT}/usr/share/luci/menu.d/luci-app-opera-proxy.json" \
+            "${PKGROOT}/usr/share/rpcd/acl.d/luci-app-opera-proxy.json" \
+            "${PKGROOT}/www/luci-static/resources/view/opera-proxy/config.js"
+
+      - name: Create nFPM config and package
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          mkdir -p packaging
+
+          cat > packaging/postinstall.sh <<'EOF'
+          #!/bin/sh
+          set -e
+
+          [ -n "${IPKG_INSTROOT}" ] && exit 0
+
+          /etc/init.d/opera-proxy enable >/dev/null 2>&1 || true
+          /etc/init.d/opera-proxy restart >/dev/null 2>&1 || /etc/init.d/opera-proxy start >/dev/null 2>&1 || true
+          /etc/init.d/rpcd reload >/dev/null 2>&1 || true
+          rm -f /tmp/luci-indexcache /tmp/luci-modulecache
+          exit 0
+          EOF
+
+          cat > packaging/preremove.sh <<'EOF'
+          #!/bin/sh
+          set -e
+
+          [ -n "${IPKG_INSTROOT}" ] && exit 0
+
+          /etc/init.d/opera-proxy stop >/dev/null 2>&1 || true
+          /etc/init.d/opera-proxy disable >/dev/null 2>&1 || true
+          rm -f /tmp/luci-indexcache /tmp/luci-modulecache
+          exit 0
+          EOF
+
+          chmod 0755 packaging/postinstall.sh packaging/preremove.sh
+
+          ARCHS=("aarch64_generic" "aarch64_cortex-a53")
+          export PKG_DESC="OpenWrt LuCI package for Opera Proxy proxy. Installs a ready-to-test local SOCKS5 proxy on 127.0.0.1:18080 with service control, country selection and runtime status page."
+
+          export SOURCE_DATE_EPOCH=1704067200
+          for ARCH in "${ARCHS[@]}"; do
+            cat > nfpm_ipk.yaml <<EOF
+          name: ${PKG_NAME}
+          arch: ${ARCH}
+          platform: linux
+          version: ${VERSION}
+          section: net
+          priority: optional
+          maintainer: ${GITHUB_REPOSITORY_OWNER}
+          description: "${PKG_DESC}"
+          homepage: https://github.com/${UPSTREAM_REPO}
+          license: MIT
+
+          depends:
+            - procd
+            - uci
+            - luci-base
+            - rpcd
+            - rpcd-mod-file
+
+          contents:
+            - src: ./${BIN_NAME}
+              dst: /usr/bin/${BIN_NAME}
+              file_info:
+                mode: 0755
+                mtime: 2024-01-01T00:00:00Z
+
+            - src: ./pkgroot/etc/init.d/
+              dst: /etc/init.d
+              type: tree
+
+            - src: ./pkgroot/usr/share/luci/menu.d/
+              dst: /usr/share/luci/menu.d
+              type: tree
+
+            - src: ./pkgroot/usr/share/rpcd/acl.d/
+              dst: /usr/share/rpcd/acl.d
+              type: tree
+
+            - src: ./pkgroot/www/luci-static/resources/view/opera-proxy/
+              dst: /www/luci-static/resources/view/opera-proxy
+              type: tree
+
+            - src: ./pkgroot/etc/config/opera-proxy
+              dst: /etc/config/opera-proxy
+              type: config|noreplace
+              file_info:
+                mode: 0644
+                mtime: 2024-01-01T00:00:00Z
+
+          scripts:
+            postinstall: ./packaging/postinstall.sh
+            preremove: ./packaging/preremove.sh
+          EOF
+
+            nfpm package --config nfpm_ipk.yaml --packager ipk --target "${PKG_NAME}_${VERSION}_${ARCH}.ipk"
+          done
+
+          unset SOURCE_DATE_EPOCH
+          for ARCH in "${ARCHS[@]}"; do
+            cat > nfpm_apk.yaml <<EOF
+          name: ${PKG_NAME}
+          arch: ${ARCH}
+          platform: linux
+          version: ${VERSION}
+          section: net
+          priority: optional
+          maintainer: ${GITHUB_REPOSITORY_OWNER}
+          description: "${PKG_DESC}"
+          homepage: https://github.com/${UPSTREAM_REPO}
+          license: MIT
+
+          depends:
+            - procd
+            - uci
+            - luci-base
+            - rpcd
+            - rpcd-mod-file
+
+          contents:
+            - src: ./${BIN_NAME}
+              dst: /usr/bin/${BIN_NAME}
+              file_info:
+                mode: 0755
+
+            - src: ./pkgroot/etc/init.d/
+              dst: /etc/init.d
+              type: tree
+
+            - src: ./pkgroot/usr/share/luci/menu.d/
+              dst: /usr/share/luci/menu.d
+              type: tree
+
+            - src: ./pkgroot/usr/share/rpcd/acl.d/
+              dst: /usr/share/rpcd/acl.d
+              type: tree
+
+            - src: ./pkgroot/www/luci-static/resources/view/opera-proxy/
+              dst: /www/luci-static/resources/view/opera-proxy
+              type: tree
+
+            - src: ./pkgroot/etc/config/opera-proxy
+              dst: /etc/config/opera-proxy
+              type: config|noreplace
+              file_info:
+                mode: 0644
+
+          scripts:
+            postinstall: ./packaging/postinstall.sh
+            preremove: ./packaging/preremove.sh
+          EOF
+
+            nfpm package --config nfpm_apk.yaml --packager apk --target "${PKG_NAME}_${VERSION}_${ARCH}.apk"
+          done
+
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sha256sum "${BIN_NAME}" *.ipk *.apk > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: opera-proxy-packages-${{ env.VERSION }}
+          path: |
+            *.ipk
+            *.apk
+            ${BIN_NAME}
+            SHA256SUMS.txt
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Opera Proxy ${{ env.VERSION }}
+          files: |
+            *.ipk
+            *.apk
+            ${BIN_NAME}
+            SHA256SUMS.txt
+          draft: false
+          prerelease: false
