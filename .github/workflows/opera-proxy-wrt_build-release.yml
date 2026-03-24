@@ -1,0 +1,305 @@
+name: Build and Release opera-proxy (OpenWrt aarch64)
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - '[0-9]*'
+
+  workflow_dispatch:
+    inputs:
+      build_target:
+        description: 'Upstream tag or branch (example: v1.15.0 or master)'
+        required: true
+        default: 'v1.15.0'
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Resolve build target
+        run: |
+          set -euxo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "VERSION=${{ github.event.inputs.build_target }}" >> "$GITHUB_ENV"
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=nightly" >> "$GITHUB_ENV"
+          fi
+
+          echo "UPSTREAM_REPO=Snawoot/opera-proxy" >> "$GITHUB_ENV"
+          echo "PKG_NAME=opera-proxy" >> "$GITHUB_ENV"
+          echo "BIN_NAME=opera-proxy" >> "$GITHUB_ENV"
+          echo "OUT_BIN=opera-proxy-aarch64-musl" >> "$GITHUB_ENV"
+
+      - name: Checkout local repository
+        uses: actions/checkout@v4
+
+      - name: Checkout upstream repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.VERSION }}
+          path: upstream_src
+
+      - name: Setup Go from upstream go.mod
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: upstream_src/go.mod
+          cache-dependency-path: upstream_src/go.sum
+
+      - name: Install packaging and compression tools
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq dos2unix upx-ucl file
+
+          NFPM_TAG=$(curl -sL https://api.github.com/repos/goreleaser/nfpm/releases/latest | jq -r .tag_name)
+          NFPM_VER=${NFPM_TAG#v}
+          curl -sSfL "https://github.com/goreleaser/nfpm/releases/download/${NFPM_TAG}/nfpm_${NFPM_VER}_Linux_x86_64.tar.gz" | tar -xz
+          sudo mv nfpm /usr/local/bin/
+
+      - name: Build minimal arm64 binary
+        run: |
+          set -euxo pipefail
+          cd upstream_src
+
+          export CGO_ENABLED=0
+          export GOOS=linux
+          export GOARCH=arm64
+
+          go mod download
+
+          go build \
+            -trimpath \
+            -buildvcs=false \
+            -tags 'netgo osusergo' \
+            -ldflags='-s -w -buildid=' \
+            -o "../${OUT_BIN}" \
+            .
+
+          cd ..
+          file "${OUT_BIN}"
+          ls -lh "${OUT_BIN}"
+
+      - name: Strip and compress with UPX
+        run: |
+          set -euxo pipefail
+
+          strip --strip-unneeded "${OUT_BIN}" || true
+          upx --best --lzma "${OUT_BIN}" || true
+
+          file "${OUT_BIN}"
+          ls -lh "${OUT_BIN}"
+
+      - name: Normalize package files
+        run: |
+          set -euxo pipefail
+          dos2unix "files/${PKG_NAME}.init" "files/${PKG_NAME}.config"
+
+      - name: Create package lifecycle scripts
+        run: |
+          set -euxo pipefail
+
+          cat > postinst.sh <<'EOF'
+          #!/bin/sh
+          set -e
+
+          if [ ! -f /etc/config/opera-proxy ]; then
+            mkdir -p /etc/config
+            cat > /etc/config/opera-proxy <<'EOC'
+          config service 'main'
+            option enabled '1'
+            option country 'EU'
+            option bind_address '127.0.0.1:18080'
+            option socks_mode '0'
+            option verbosity '20'
+            option timeout '10s'
+            option init_retries '0'
+            option init_retry_interval '5s'
+            option refresh '4h'
+            option refresh_retry '5s'
+            option server_selection 'fastest'
+            option server_selection_timeout '30s'
+          EOC
+            chmod 0644 /etc/config/opera-proxy || true
+          fi
+
+          /etc/init.d/opera-proxy enable 2>/dev/null || true
+          /etc/init.d/opera-proxy restart 2>/dev/null || /etc/init.d/opera-proxy start 2>/dev/null || true
+
+          echo ""
+          echo "=============================================================="
+          echo " opera-proxy installed"
+          echo " Local upstream proxy: 127.0.0.1:18080"
+          echo " Config: /etc/config/opera-proxy"
+          echo " Init:   /etc/init.d/opera-proxy"
+          echo "=============================================================="
+
+          exit 0
+          EOF
+
+          cat > prerm.sh <<'EOF'
+          #!/bin/sh
+          /etc/init.d/opera-proxy disable 2>/dev/null || true
+          /etc/init.d/opera-proxy stop 2>/dev/null || true
+          exit 0
+          EOF
+
+          cat > postrm.sh <<'EOF'
+          #!/bin/sh
+          rm -f /var/run/opera-proxy.pid
+          rm -f /var/log/opera-proxy.log
+          exit 0
+          EOF
+
+          chmod 0755 postinst.sh prerm.sh postrm.sh
+
+      - name: Build IPK and APK packages with nFPM
+        run: |
+          set -euxo pipefail
+
+          export PKG_VER="${{ env.VERSION }}"
+          export PKG_MAINTAINER="${GITHUB_REPOSITORY_OWNER}"
+          export PKG_DESC="Standalone Opera proxy client for OpenWrt. Installs a ready-to-test local HTTP proxy on 127.0.0.1:18080."
+          export SOURCE_DATE_EPOCH=1704067200
+
+          ARCHS=("aarch64_generic" "aarch64_cortex-a53")
+
+          for ARCH in "${ARCHS[@]}"; do
+            cat > nfpm_ipk.yaml <<EOF
+          name: ${PKG_NAME}
+          arch: ${ARCH}
+          platform: linux
+          version: ${PKG_VER}
+          maintainer: ${PKG_MAINTAINER}
+          section: net
+          priority: optional
+          description: "${PKG_DESC}"
+          contents:
+            - src: ./${OUT_BIN}
+              dst: /usr/bin/${BIN_NAME}
+              file_info:
+                mode: 0755
+                mtime: 2024-01-01T00:00:00Z
+
+            - src: ./files/${PKG_NAME}.init
+              dst: /etc/init.d/${PKG_NAME}
+              file_info:
+                mode: 0755
+                mtime: 2024-01-01T00:00:00Z
+
+            - src: ./files/${PKG_NAME}.config
+              dst: /etc/config/${PKG_NAME}
+              type: config
+              file_info:
+                mode: 0644
+                mtime: 2024-01-01T00:00:00Z
+
+          scripts:
+            postinstall: ./postinst.sh
+            preremove: ./prerm.sh
+            postremove: ./postrm.sh
+          EOF
+
+            nfpm pkg \
+              --config nfpm_ipk.yaml \
+              --packager ipk \
+              --target "${PKG_NAME}_${PKG_VER}_${ARCH}.ipk"
+          done
+
+          for ARCH in "${ARCHS[@]}"; do
+            cat > nfpm_apk.yaml <<EOF
+          name: ${PKG_NAME}
+          arch: ${ARCH}
+          platform: linux
+          version: ${PKG_VER}
+          maintainer: ${PKG_MAINTAINER}
+          description: "${PKG_DESC}"
+          contents:
+            - src: ./${OUT_BIN}
+              dst: /usr/bin/${BIN_NAME}
+              file_info:
+                mode: 0755
+
+            - src: ./files/${PKG_NAME}.init
+              dst: /etc/init.d/${PKG_NAME}
+              file_info:
+                mode: 0755
+
+            - src: ./files/${PKG_NAME}.config
+              dst: /etc/config/${PKG_NAME}
+              type: config
+              file_info:
+                mode: 0644
+
+          scripts:
+            postinstall: ./postinst.sh
+            preremove: ./prerm.sh
+            postremove: ./postrm.sh
+          EOF
+
+            nfpm pkg \
+              --config nfpm_apk.yaml \
+              --packager apk \
+              --target "${PKG_NAME}_${PKG_VER}_${ARCH}.apk"
+          done
+
+      - name: Generate SHA256SUMS
+        run: |
+          set -euxo pipefail
+          sha256sum "${OUT_BIN}" *.ipk *.apk > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Fetch upstream release notes
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+
+          TAG="${{ env.VERSION }}"
+          mkdir -p .release
+
+          if gh release view "$TAG" -R "${UPSTREAM_REPO}" --json body,name >/tmp/upstream_release.json 2>/dev/null; then
+            jq -r '.body // ""' /tmp/upstream_release.json > .release/body.txt
+          else
+            printf 'Build of %s\n' "$TAG" > .release/body.txt
+          fi
+
+      - name: Create or update GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+
+          TAG="${{ env.VERSION }}"
+          TITLE="Release ${TAG}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --title "$TITLE" \
+              --notes-file .release/body.txt
+
+            gh release upload "$TAG" \
+              "${OUT_BIN}" \
+              *.ipk \
+              *.apk \
+              SHA256SUMS.txt \
+              --clobber
+          else
+            gh release create "$TAG" \
+              "${OUT_BIN}" \
+              *.ipk \
+              *.apk \
+              SHA256SUMS.txt \
+              --title "$TITLE" \
+              --notes-file .release/body.txt
+          fi
