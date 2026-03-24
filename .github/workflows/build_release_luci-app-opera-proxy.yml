@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Git ref to build (tag, branch or commit SHA)'
+        description: 'Git ref to build (tag, branch, commit SHA, or latest)'
         required: true
-        default: 'master'
+        default: 'latest'
 
 jobs:
   release:
@@ -21,6 +21,7 @@ jobs:
     env:
       PKG_NAME: luci-app-opera-proxy
       BIN_NAME: opera-proxy
+      OUT_BIN: opera-proxy-aarch64-musl
       SERVICE_NAME: opera-proxy
       UPSTREAM_REPO: Alexey71/opera-proxy
 
@@ -33,20 +34,30 @@ jobs:
         run: |
           set -euo pipefail
 
-          REF_RAW="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}"
-          VERSION="${REF_RAW#v}"
+          INPUT_REF="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}"
+          INPUT_REF="${INPUT_REF:-latest}"
 
-          if [[ -z "${VERSION}" || "${VERSION}" == "master" || "${VERSION}" == "main" ]]; then
-            VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"
-            RELEASE_TAG="opera-proxy-${VERSION}"
-          elif [[ "${REF_RAW}" == v* ]]; then
-            RELEASE_TAG="${REF_RAW}"
+          if [[ "${{ github.event_name }}" == "push" && "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            BUILD_REF="${GITHUB_REF_NAME}"
+          elif [[ -z "${INPUT_REF}" || "${INPUT_REF}" == "latest" ]]; then
+            BUILD_REF="$(git ls-remote --tags --refs "https://github.com/${UPSTREAM_REPO}.git" 'v*' | awk -F/ '{print $3}' | sort -V | tail -n1)"
+            [ -n "${BUILD_REF}" ] || { echo "Unable to resolve latest upstream tag"; exit 1; }
           else
+            BUILD_REF="${INPUT_REF}"
+          fi
+
+          VERSION="${BUILD_REF#v}"
+
+          if [[ "${BUILD_REF}" == v* ]]; then
+            RELEASE_TAG="${BUILD_REF}"
+          else
+            VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"
             RELEASE_TAG="opera-proxy-${VERSION}-${GITHUB_RUN_NUMBER}"
           fi
 
           {
-            echo "REF_RAW=${REF_RAW}"
+            echo "INPUT_REF=${INPUT_REF}"
+            echo "BUILD_REF=${BUILD_REF}"
             echo "VERSION=${VERSION}"
             echo "RELEASE_TAG=${RELEASE_TAG}"
           } >> "$GITHUB_ENV"
@@ -57,7 +68,7 @@ jobs:
           set -euxo pipefail
 
           REPO="https://github.com/${UPSTREAM_REPO}.git"
-          REF="${REF_RAW}"
+          REF="${BUILD_REF}"
 
           rm -rf src
           git clone --depth 1 "$REPO" src
@@ -113,15 +124,15 @@ jobs:
             -buildvcs=false \
             -tags 'netgo osusergo' \
             -ldflags='-s -w -buildid=' \
-            -o "${GITHUB_WORKSPACE}/${BIN_NAME}" \
+            -o "${GITHUB_WORKSPACE}/${OUT_BIN}" \
             .
 
-          test -f "${GITHUB_WORKSPACE}/${BIN_NAME}"
-          strip --strip-unneeded "${GITHUB_WORKSPACE}/${BIN_NAME}" || true
-          upx --best --lzma "${GITHUB_WORKSPACE}/${BIN_NAME}" || true
+          test -f "${GITHUB_WORKSPACE}/${OUT_BIN}"
+          strip --strip-unneeded "${GITHUB_WORKSPACE}/${OUT_BIN}" || true
+          upx --best --lzma "${GITHUB_WORKSPACE}/${OUT_BIN}" || true
 
-          file "${GITHUB_WORKSPACE}/${BIN_NAME}"
-          ls -lh "${GITHUB_WORKSPACE}/${BIN_NAME}"
+          file "${GITHUB_WORKSPACE}/${OUT_BIN}"
+          ls -lh "${GITHUB_WORKSPACE}/${OUT_BIN}"
 
       - name: Generate Package Files
         shell: bash
@@ -739,7 +750,7 @@ jobs:
             - rpcd-mod-file
 
           contents:
-            - src: ./${BIN_NAME}
+            - src: ./${OUT_BIN}
               dst: /usr/bin/${BIN_NAME}
               file_info:
                 mode: 0755
@@ -798,7 +809,7 @@ jobs:
             - rpcd-mod-file
 
           contents:
-            - src: ./${BIN_NAME}
+            - src: ./${OUT_BIN}
               dst: /usr/bin/${BIN_NAME}
               file_info:
                 mode: 0755
@@ -837,7 +848,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          sha256sum "${BIN_NAME}" *.ipk *.apk > SHA256SUMS.txt
+          sha256sum "${OUT_BIN}" *.ipk *.apk > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Upload build artifacts
@@ -847,7 +858,7 @@ jobs:
           path: |
             *.ipk
             *.apk
-            ${BIN_NAME}
+            ${{ env.OUT_BIN }}
             SHA256SUMS.txt
 
       - name: GitHub Release
@@ -858,7 +869,7 @@ jobs:
           files: |
             *.ipk
             *.apk
-            ${BIN_NAME}
+            ${{ env.OUT_BIN }}
             SHA256SUMS.txt
           draft: false
           prerelease: false
