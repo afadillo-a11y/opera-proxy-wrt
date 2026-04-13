@@ -1,4 +1,4 @@
-name: Build and Release Opera Proxy (LuCI AIO Colorful)
+name: Build and Release Opera Proxy WRT packages (WebUI with binary, spooffing enabled)
 
 on:
   push:
@@ -176,6 +176,7 @@ jobs:
               option refresh_retry '5s'
               option server_selection 'fastest'
               option server_selection_timeout '30s'
+              option bootstrap_dns 'tls://9.9.9.9:853'
               option proxy ''
               option api_proxy ''
               option cafile ''
@@ -229,6 +230,7 @@ jobs:
               local init_retries init_retry_interval refresh refresh_retry
               local server_selection server_selection_timeout
               local proxy api_proxy cafile fake_sni override_proxy_address
+              local bootstrap_dns
               local api_client_version api_client_type api_user_agent
 
               config_load "$CFG"
@@ -252,6 +254,7 @@ jobs:
               config_get cafile               main cafile                 ''
               config_get fake_sni             main fake_sni               ''
               config_get override_proxy_address main override_proxy_address ''
+              config_get bootstrap_dns        main bootstrap_dns          'tls://9.9.9.9:853'
 
               # Browser spoofing — read from UCI, pass only when explicitly set
               config_get api_client_version   main api_client_version     ''
@@ -272,6 +275,7 @@ jobs:
               procd_append_param command -server-selection-timeout   "$server_selection_timeout"
 
               [ "$socks_mode" -eq 1 ]          && procd_append_param command -socks-mode
+              [ -n "$bootstrap_dns" ]          && procd_append_param command -bootstrap-dns          "$bootstrap_dns"
               [ -n "$proxy" ]                  && procd_append_param command -proxy                  "$proxy"
               [ -n "$api_proxy" ]              && procd_append_param command -api-proxy              "$api_proxy"
               [ -n "$cafile" ]                 && procd_append_param command -cafile                 "$cafile"
@@ -790,7 +794,15 @@ jobs:
                   o.default = 'fastest';
                   o.rmempty = false;
 
+                  o = s.option(form.Value, 'bootstrap_dns', 'Bootstrap DNS');
+                  o.placeholder = 'tls://9.9.9.9:853';
+                  o.default     = 'tls://9.9.9.9:853';
+                  o.rmempty     = true;
+                  o.description = 'DNS resolver for SurfEasy API bootstrap. Supports plain (8.8.8.8), DoT (tls://9.9.9.9:853) and DoH (https://...) formats. Passed as -bootstrap-dns.';
+
                   o = s.option(form.Value, 'proxy', 'Upstream proxy');
+                  o.placeholder = 'socks5://127.0.0.1:1080';
+                  o.rmempty     = true;
                   o.placeholder = 'socks5://127.0.0.1:1080';
                   o.rmempty     = true;
 
