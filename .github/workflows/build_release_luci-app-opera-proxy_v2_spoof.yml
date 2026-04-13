@@ -159,6 +159,9 @@ jobs:
             "${PKGROOT}/usr/share/rpcd/acl.d" \
             "${PKGROOT}/www/luci-static/resources/view/opera-proxy"
 
+          # ────────────────────────────────────────────────────────────────────
+          # /etc/config/opera-proxy
+          # ────────────────────────────────────────────────────────────────────
           cat > "${PKGROOT}/etc/config/opera-proxy" <<'EOF'
           config service 'main'
               option enabled '1'
@@ -178,8 +181,33 @@ jobs:
               option cafile ''
               option fake_sni ''
               option override_proxy_address ''
+
+              # Browser spoofing — leave empty to use binary built-in defaults.
+              # Choose a preset in the LuCI web interface, or set manually here.
+              # Preset: Opera 130 / Chrome 146 (Windows)
+              # option api_client_version 'Stable 130.0.5847.12'
+              # option api_client_type    'se0316'
+              # option api_user_agent     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 OPR/130.0.0.0'
+
+              # Preset: Opera 114 / Chrome 128 (Windows) — binary default
+              # option api_client_version 'Stable 114.0.5282.21'
+              # option api_client_type    'se0316'
+              # option api_user_agent     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 OPR/114.0.0.0'
+
+              # Preset: Opera 100 / Chrome 114 (Windows)
+              # option api_client_version 'Stable 100.0.4896.127'
+              # option api_client_type    'se0316'
+              # option api_user_agent     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 OPR/100.0.0.0'
+
+              # Preset: Opera 90 / Chrome 104 (macOS)
+              # option api_client_version 'Stable 90.0.4480.54'
+              # option api_client_type    'se0316'
+              # option api_user_agent     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36 OPR/90.0.0.0'
           EOF
 
+          # ────────────────────────────────────────────────────────────────────
+          # /etc/init.d/opera-proxy
+          # ────────────────────────────────────────────────────────────────────
           cat > "${PKGROOT}/etc/init.d/opera-proxy" <<'EOF'
           #!/bin/sh /etc/rc.common
 
@@ -187,7 +215,7 @@ jobs:
           STOP=15
           USE_PROCD=1
 
-          SERVICE_NAME="opera-proxy"
+          NAME="opera-proxy"
           PROG="/usr/bin/opera-proxy"
           CFG="opera-proxy"
 
@@ -201,48 +229,59 @@ jobs:
               local init_retries init_retry_interval refresh refresh_retry
               local server_selection server_selection_timeout
               local proxy api_proxy cafile fake_sni override_proxy_address
+              local api_client_version api_client_type api_user_agent
 
               config_load "$CFG"
 
               config_get_bool enabled main enabled 1
               [ "$enabled" -eq 1 ] || return 0
 
-              config_get country main country 'EU'
-              config_get bind_address main bind_address '127.0.0.1:18080'
-              config_get_bool socks_mode main socks_mode 1
-              config_get verbosity main verbosity '20'
-              config_get timeout main timeout '10s'
-              config_get init_retries main init_retries '0'
-              config_get init_retry_interval main init_retry_interval '5s'
-              config_get refresh main refresh '4h'
-              config_get refresh_retry main refresh_retry '5s'
-              config_get server_selection main server_selection 'fastest'
+              config_get country              main country                'EU'
+              config_get bind_address         main bind_address           '127.0.0.1:18080'
+              config_get_bool socks_mode      main socks_mode             1
+              config_get verbosity            main verbosity              '20'
+              config_get timeout              main timeout                '10s'
+              config_get init_retries         main init_retries           '0'
+              config_get init_retry_interval  main init_retry_interval    '5s'
+              config_get refresh              main refresh                '4h'
+              config_get refresh_retry        main refresh_retry          '5s'
+              config_get server_selection     main server_selection       'fastest'
               config_get server_selection_timeout main server_selection_timeout '30s'
-              config_get proxy main proxy ''
-              config_get api_proxy main api_proxy ''
-              config_get cafile main cafile ''
-              config_get fake_sni main fake_sni ''
+              config_get proxy                main proxy                  ''
+              config_get api_proxy            main api_proxy              ''
+              config_get cafile               main cafile                 ''
+              config_get fake_sni             main fake_sni               ''
               config_get override_proxy_address main override_proxy_address ''
+
+              # Browser spoofing — read from UCI, pass only when explicitly set
+              config_get api_client_version   main api_client_version     ''
+              config_get api_client_type      main api_client_type        ''
+              config_get api_user_agent       main api_user_agent         ''
 
               procd_open_instance
               procd_set_param command "$PROG"
-              procd_append_param command -country "$country"
-              procd_append_param command -bind-address "$bind_address"
-              procd_append_param command -verbosity "$verbosity"
-              procd_append_param command -timeout "$timeout"
-              procd_append_param command -init-retries "$init_retries"
-              procd_append_param command -init-retry-interval "$init_retry_interval"
-              procd_append_param command -refresh "$refresh"
-              procd_append_param command -refresh-retry "$refresh_retry"
-              procd_append_param command -server-selection "$server_selection"
-              procd_append_param command -server-selection-timeout "$server_selection_timeout"
+              procd_append_param command -country                    "$country"
+              procd_append_param command -bind-address               "$bind_address"
+              procd_append_param command -verbosity                  "$verbosity"
+              procd_append_param command -timeout                    "$timeout"
+              procd_append_param command -init-retries               "$init_retries"
+              procd_append_param command -init-retry-interval        "$init_retry_interval"
+              procd_append_param command -refresh                    "$refresh"
+              procd_append_param command -refresh-retry              "$refresh_retry"
+              procd_append_param command -server-selection           "$server_selection"
+              procd_append_param command -server-selection-timeout   "$server_selection_timeout"
 
-              [ "$socks_mode" -eq 1 ] && procd_append_param command -socks-mode
-              [ -n "$proxy" ] && procd_append_param command -proxy "$proxy"
-              [ -n "$api_proxy" ] && procd_append_param command -api-proxy "$api_proxy"
-              [ -n "$cafile" ] && procd_append_param command -cafile "$cafile"
-              [ -n "$fake_sni" ] && procd_append_param command -fake-SNI "$fake_sni"
+              [ "$socks_mode" -eq 1 ]          && procd_append_param command -socks-mode
+              [ -n "$proxy" ]                  && procd_append_param command -proxy                  "$proxy"
+              [ -n "$api_proxy" ]              && procd_append_param command -api-proxy              "$api_proxy"
+              [ -n "$cafile" ]                 && procd_append_param command -cafile                 "$cafile"
+              [ -n "$fake_sni" ]               && procd_append_param command -fake-SNI              "$fake_sni"
               [ -n "$override_proxy_address" ] && procd_append_param command -override-proxy-address "$override_proxy_address"
+
+              # Browser spoofing flags — omitted when empty so binary uses its own defaults
+              [ -n "$api_client_version" ]     && procd_append_param command -api-client-version    "$api_client_version"
+              [ -n "$api_client_type" ]        && procd_append_param command -api-client-type       "$api_client_type"
+              [ -n "$api_user_agent" ]         && procd_append_param command -api-user-agent        "$api_user_agent"
 
               procd_set_param respawn 3600 5 5
               procd_set_param stdout 1
@@ -255,6 +294,9 @@ jobs:
           }
           EOF
 
+          # ────────────────────────────────────────────────────────────────────
+          # LuCI menu
+          # ────────────────────────────────────────────────────────────────────
           cat > "${PKGROOT}/usr/share/luci/menu.d/luci-app-opera-proxy.json" <<'EOF'
           {
             "admin/services/opera-proxy": {
@@ -271,6 +313,9 @@ jobs:
           }
           EOF
 
+          # ────────────────────────────────────────────────────────────────────
+          # rpcd ACL
+          # ────────────────────────────────────────────────────────────────────
           cat > "${PKGROOT}/usr/share/rpcd/acl.d/luci-app-opera-proxy.json" <<'EOF'
           {
             "luci-app-opera-proxy": {
@@ -298,6 +343,9 @@ jobs:
           }
           EOF
 
+          # ────────────────────────────────────────────────────────────────────
+          # /www/luci-static/resources/view/opera-proxy/config.js
+          # ────────────────────────────────────────────────────────────────────
           cat > "${PKGROOT}/www/luci-static/resources/view/opera-proxy/config.js" <<'EOF'
           'use strict';
           'require view';
@@ -315,6 +363,75 @@ jobs:
               expect: { result: false }
           });
 
+          // ─── Browser preset table ────────────────────────────────────────────
+          // Empty string  = clear the UCI option → binary uses its built-in default
+          // null          = keep whatever the user typed (Custom mode)
+          var BROWSER_PRESETS = [
+              {
+                  id:      'default',
+                  label:   'Binary default (Opera 114 / Chrome 128, Windows)',
+                  version: '',
+                  type:    '',
+                  ua:      ''
+              },
+              {
+                  id:      'opera130_win',
+                  label:   'Opera 130 / Chrome 146 — Windows',
+                  version: 'Stable 130.0.5847.12',
+                  type:    'se0316',
+                  ua:      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 OPR/130.0.0.0'
+              },
+              {
+                  id:      'opera114_win',
+                  label:   'Opera 114 / Chrome 128 — Windows (built-in default)',
+                  version: 'Stable 114.0.5282.21',
+                  type:    'se0316',
+                  ua:      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 OPR/114.0.0.0'
+              },
+              {
+                  id:      'opera100_win',
+                  label:   'Opera 100 / Chrome 114 — Windows',
+                  version: 'Stable 100.0.4896.127',
+                  type:    'se0316',
+                  ua:      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 OPR/100.0.0.0'
+              },
+              {
+                  id:      'opera90_mac',
+                  label:   'Opera 90 / Chrome 104 — macOS',
+                  version: 'Stable 90.0.4480.54',
+                  type:    'se0316',
+                  ua:      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36 OPR/90.0.0.0'
+              },
+              {
+                  id:      'custom',
+                  label:   '[ Custom — fill fields manually below ]',
+                  version: null,
+                  type:    null,
+                  ua:      null
+              }
+          ];
+
+          function presetById(id) {
+              for (var i = 0; i < BROWSER_PRESETS.length; i++)
+                  if (BROWSER_PRESETS[i].id === id)
+                      return BROWSER_PRESETS[i];
+              return null;
+          }
+
+          function detectPreset(ver, type, ua) {
+              if (!ver && !type && !ua)
+                  return 'default';
+              for (var i = 0; i < BROWSER_PRESETS.length; i++) {
+                  var p = BROWSER_PRESETS[i];
+                  if (p.id === 'default' || p.id === 'custom')
+                      continue;
+                  if (p.version === ver && p.type === type && p.ua === ua)
+                      return p.id;
+              }
+              return 'custom';
+          }
+
+          // ─── Helpers ─────────────────────────────────────────────────────────
           function firstPid(text) {
               var m = String(text || '').trim().match(/^(\d+)/);
               return m ? m[1] : null;
@@ -337,74 +454,70 @@ jobs:
           }
 
           function badge(label, color) {
-              return '<span style="display:inline-block;padding:2px 8px;border-radius:999px;font-weight:600;color:#fff;background:' + color + '">' +
-                  escapeHtml(label) + '</span>';
+              return '<span style="display:inline-block;padding:2px 8px;border-radius:999px;font-weight:600;color:#fff;background:' +
+                  color + '">' + escapeHtml(label) + '</span>';
           }
 
+          function csvUnquote(s) {
+              return String(s || '').replace(/^"|"$/g, '').replace(/""/g, '"');
+          }
+
+          function parseCountryCsv(text) {
+              var out = [];
+              var lines = String(text || '').trim().split(/\r?\n/);
+              for (var i = 1; i < lines.length; i++) {
+                  var line = lines[i];
+                  if (!line) continue;
+                  var m = line.match(/^\s*"?([^",]+)"?\s*,\s*"?(.*?)"?\s*$/);
+                  if (!m) continue;
+                  out.push({ code: csvUnquote(m[1]), name: csvUnquote(m[2]) });
+              }
+              return out;
+          }
+
+          // ─── View ─────────────────────────────────────────────────────────────
           return view.extend({
-              _countryChoices: null,
-              _statusNode: null,
-              _actionNode: null,
-              _logNode: null,
-              _buttons: [],
+              _statusNode:     null,
+              _actionNode:     null,
+              _logNode:        null,
+              _buttons:        [],
               _pollRegistered: false,
+              _countries:      null,
 
               load: function() {
                   return Promise.all([
                       uci.load('opera-proxy'),
-                      this.loadCountryChoices()
-                  ]);
+                      L.resolveDefault(fs.exec_direct('/usr/bin/opera-proxy', ['-list-countries'], 'text'), '')
+                  ]).then(L.bind(function(res) {
+                      var parsed = parseCountryCsv(res[1]);
+                      if (!parsed.length) {
+                          parsed = [
+                              { code: 'EU', name: 'Europe' },
+                              { code: 'AM', name: 'Americas' },
+                              { code: 'AS', name: 'Asia' }
+                          ];
+                      }
+                      this._countries = parsed;
+                      return res;
+                  }, this));
               },
 
-              loadCountryChoices: function() {
-                  var fallback = [
-                      ['EU', 'EU'],
-                      ['AM', 'AM'],
-                      ['AS', 'AS']
-                  ];
-
-                  return L.resolveDefault(fs.exec_direct('/usr/bin/opera-proxy', ['-list-countries'], 'text'), '')
-                      .then(function(output) {
-                          var lines = String(output || '').split(/\r?\n/);
-                          var choices = [];
-
-                          lines.forEach(function(line) {
-                              var s = String(line || '').trim();
-                              var m;
-
-                              if (!s)
-                                  return;
-
-                              m = s.match(/^([A-Z]{2})\b(?:[\s,:-]+(.+))?$/);
-                              if (m)
-                                  choices.push([m[1], m[2] ? (m[1] + ' - ' + m[2]) : m[1]]);
-                          });
-
-                          return choices.length ? choices : fallback;
-                      })
-                      .catch(function() {
-                          return fallback;
-                      });
-              },
-
-              readProcValue: function(pid, fieldName) {
-                  if (!pid)
-                      return Promise.resolve(null);
-
+              readProcValue: function(pid, field) {
+                  if (!pid) return Promise.resolve(null);
                   return L.resolveDefault(fs.read_direct('/proc/' + pid + '/status'), '').then(function(txt) {
-                      var m = String(txt || '').match(new RegExp('^' + fieldName + ':\\s+([0-9]+)\\s+kB$', 'm'));
+                      var m = String(txt || '').match(new RegExp('^' + field + ':\\s+([0-9]+)\\s+kB$', 'm'));
                       return m ? m[1] : null;
                   });
               },
 
               fetchRuntime: function() {
                   var self = this;
-                  var mode = (uci.get('opera-proxy', 'main', 'socks_mode') === '1') ? 'SOCKS5' : 'HTTP';
-                  var bind = uci.get('opera-proxy', 'main', 'bind_address') || '127.0.0.1:18080';
-                  var country = uci.get('opera-proxy', 'main', 'country') || 'EU';
-
                   return L.resolveDefault(fs.exec_direct('/bin/pidof', ['opera-proxy'], 'text'), '').then(function(pidText) {
-                      var pid = firstPid(pidText);
+                      var pid     = firstPid(pidText);
+                      var mode    = (uci.get('opera-proxy', 'main', 'socks_mode') === '1') ? 'SOCKS5' : 'HTTP';
+                      var bind    = uci.get('opera-proxy', 'main', 'bind_address') || '127.0.0.1:18080';
+                      var country = uci.get('opera-proxy', 'main', 'country') || 'EU';
+                      var ver     = uci.get('opera-proxy', 'main', 'api_client_version') || '';
 
                       return Promise.all([
                           Promise.resolve(pid),
@@ -412,71 +525,60 @@ jobs:
                           self.readProcValue(pid, 'VmSize'),
                           Promise.resolve(mode),
                           Promise.resolve(bind),
-                          Promise.resolve(country)
+                          Promise.resolve(country),
+                          Promise.resolve(ver)
                       ]);
                   }).then(function(res) {
-                      return {
-                          pid: res[0],
-                          vmrss: res[1],
-                          vmsize: res[2],
-                          mode: res[3],
-                          bind: res[4],
-                          country: res[5]
-                      };
+                      return { pid: res[0], vmrss: res[1], vmsize: res[2],
+                               mode: res[3], bind: res[4], country: res[5], clientVersion: res[6] };
                   });
               },
 
-              renderStatusHtml: function(runtime) {
-                  var running = !!runtime.pid;
-                  var modeColor = runtime.mode === 'SOCKS5' ? '#2563eb' : '#059669';
-
+              renderStatusHtml: function(rt) {
+                  var running   = !!rt.pid;
+                  var modeColor = rt.mode === 'SOCKS5' ? '#2563eb' : '#059669';
+                  var verLabel  = rt.clientVersion ? escapeHtml(rt.clientVersion) : '<em>(binary default)</em>';
                   return [
                       '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;align-items:stretch">',
                         '<div style="padding:10px;border:1px solid #d1d5db;border-radius:10px;background:#fff">',
                           '<div style="font-size:12px;color:#6b7280;margin-bottom:6px">Service state</div>',
                           '<div>' + badge(running ? 'Running' : 'Stopped', running ? '#16a34a' : '#dc2626') + '</div>',
-                          '<div style="margin-top:8px"><strong>PID:</strong> ' + escapeHtml(runtime.pid || '-') + '</div>',
-                          '<div style="margin-top:4px"><strong>RSS:</strong> ' + formatKBToMB(runtime.vmrss) + '</div>',
+                          '<div style="margin-top:8px"><strong>PID:</strong> ' + escapeHtml(rt.pid || '-') + '</div>',
+                          '<div style="margin-top:4px"><strong>RSS:</strong> ' + formatKBToMB(rt.vmrss) + '</div>',
                         '</div>',
                         '<div style="padding:10px;border:1px solid #d1d5db;border-radius:10px;background:#fff">',
                           '<div style="font-size:12px;color:#6b7280;margin-bottom:6px">Proxy mode</div>',
-                          '<div>' + badge(runtime.mode, modeColor) + '</div>',
-                          '<div style="margin-top:8px"><strong>Listen:</strong> ' + escapeHtml(runtime.bind) + '</div>',
-                          '<div style="margin-top:4px"><strong>Country:</strong> ' + escapeHtml(runtime.country) + '</div>',
+                          '<div>' + badge(rt.mode, modeColor) + '</div>',
+                          '<div style="margin-top:8px"><strong>Listen:</strong> ' + escapeHtml(rt.bind) + '</div>',
+                          '<div style="margin-top:4px"><strong>Country:</strong> ' + escapeHtml(rt.country) + '</div>',
                         '</div>',
                         '<div style="padding:10px;border:1px solid #d1d5db;border-radius:10px;background:#fff">',
-                          '<div style="font-size:12px;color:#6b7280;margin-bottom:6px">Process memory</div>',
-                          '<div><strong>VmRSS:</strong> ' + formatKBToMB(runtime.vmrss) + '</div>',
-                          '<div style="margin-top:4px"><strong>VmSize:</strong> ' + formatKBToMB(runtime.vmsize) + '</div>',
+                          '<div style="font-size:12px;color:#6b7280;margin-bottom:6px">Browser identity</div>',
+                          '<div style="font-size:12px;word-break:break-all"><strong>Client ver:</strong> ' + verLabel + '</div>',
+                          '<div style="margin-top:8px"><strong>VmSize:</strong> ' + formatKBToMB(rt.vmsize) + '</div>',
                         '</div>',
                       '</div>',
-                      '<div style="margin-top:8px;color:#6b7280">Status is determined through <code>pidof opera-proxy</code> and <code>/proc/&lt;pid&gt;/status</code>.</div>'
+                      '<div style="margin-top:8px;color:#6b7280">Status via <code>pidof opera-proxy</code> and <code>/proc/&lt;pid&gt;/status</code>.</div>'
                   ].join('');
               },
 
               refreshStatus: function() {
-                  if (!this._statusNode)
-                      return Promise.resolve();
-
-                  return this.fetchRuntime().then(L.bind(function(runtime) {
-                      this._statusNode.innerHTML = this.renderStatusHtml(runtime);
+                  if (!this._statusNode) return Promise.resolve();
+                  return this.fetchRuntime().then(L.bind(function(rt) {
+                      this._statusNode.innerHTML = this.renderStatusHtml(rt);
                   }, this)).catch(L.bind(function(err) {
                       this._statusNode.innerHTML =
                           '<div style="color:#b91c1c"><strong>Status read failed:</strong> ' +
-                          escapeHtml((err && err.message) ? err.message : 'unknown error') +
-                          '</div>';
+                          escapeHtml((err && err.message) || 'unknown error') + '</div>';
                   }, this));
               },
 
               refreshLogs: function() {
-                  if (!this._logNode)
-                      return Promise.resolve();
-
+                  if (!this._logNode) return Promise.resolve();
                   this._logNode.value = 'Refreshing logs...';
-
                   return L.resolveDefault(fs.exec_direct('/sbin/logread', ['-e', 'opera-proxy'], 'text'), '')
-                      .then(L.bind(function(output) {
-                          this._logNode.value = String(output || '').trim() || 'No opera-proxy log entries yet.';
+                      .then(L.bind(function(out) {
+                          this._logNode.value = String(out || '').trim() || 'No opera-proxy log entries yet.';
                           this._logNode.scrollTop = this._logNode.scrollHeight;
                       }, this))
                       .catch(L.bind(function(err) {
@@ -487,65 +589,47 @@ jobs:
               setActionState: function(busy, text) {
                   if (this._actionNode)
                       this._actionNode.textContent = text || '';
-
-                  this._buttons.forEach(function(btn) {
-                      if (btn)
-                          btn.disabled = !!busy;
-                  });
+                  this._buttons.forEach(function(btn) { if (btn) btn.disabled = !!busy; });
               },
 
               handleServiceAction: function(action) {
                   return ui.createHandlerFn(this, function(ev) {
-                      if (ev)
-                          ev.preventDefault();
-
+                      if (ev) ev.preventDefault();
                       this.setActionState(true, 'Executing action: ' + action + ' ...');
-
                       return callInitAction('opera-proxy', action)
                           .then(function() {
-                              return new Promise(function(resolve) { window.setTimeout(resolve, 1500); });
+                              return new Promise(function(r) { window.setTimeout(r, 1500); });
                           })
                           .then(L.bind(function() {
-                              return Promise.all([
-                                  this.refreshStatus(),
-                                  this.refreshLogs()
-                              ]);
+                              return Promise.all([ this.refreshStatus(), this.refreshLogs() ]);
                           }, this))
                           .then(L.bind(function() {
                               this.setActionState(false, 'Last action completed: ' + action);
                           }, this))
                           .catch(L.bind(function(err) {
-                              this.setActionState(false, (err && err.message) ? err.message : 'Operation failed');
-                              ui.addNotification(null, E('p', {}, (err && err.message) ? err.message : 'Operation failed'));
+                              var msg = (err && err.message) ? err.message : 'Operation failed';
+                              this.setActionState(false, msg);
+                              ui.addNotification(null, E('p', {}, msg));
                           }, this));
                   });
               },
 
               handleProxyTest: function() {
                   return ui.createHandlerFn(this, function(ev) {
+                      if (ev) ev.preventDefault();
                       var mode = (uci.get('opera-proxy', 'main', 'socks_mode') === '1') ? 'SOCKS5' : 'HTTP';
                       var bind = uci.get('opera-proxy', 'main', 'bind_address') || '127.0.0.1:18080';
-                      var args;
-
-                      if (ev)
-                          ev.preventDefault();
-
-                      if (mode === 'SOCKS5')
-                          args = ['--silent', '--show-error', '--max-time', '15', '--socks5-hostname', bind, 'http://ipv4.icanhazip.com'];
-                      else
-                          args = ['--silent', '--show-error', '--max-time', '15', '--proxy', 'http://' + bind, 'http://ipv4.icanhazip.com'];
+                      var args = (mode === 'SOCKS5')
+                          ? ['--silent', '--show-error', '--max-time', '15', '--socks5-hostname', bind, 'http://ipv4.icanhazip.com']
+                          : ['--silent', '--show-error', '--max-time', '15', '--proxy', 'http://' + bind, 'http://ipv4.icanhazip.com'];
 
                       this.setActionState(true, 'Testing proxy via ' + mode + ' ' + bind + ' ...');
-
                       return L.resolveDefault(fs.exec_direct('/usr/bin/curl', args, 'text'), '')
-                          .then(L.bind(function(output) {
-                              var ip = String(output || '').trim();
-
-                              if (!ip)
-                                  throw new Error('Empty response from test target');
-
-                              this.setActionState(false, 'Proxy test succeeded. Exit IP: ' + ip);
-                              ui.addNotification(null, E('p', {}, 'Proxy test succeeded. Exit IP: ' + ip));
+                          .then(L.bind(function(out) {
+                              var ip = String(out || '').trim();
+                              if (!ip) throw new Error('Empty response from test target');
+                              this.setActionState(false, 'Proxy test OK. Exit IP: ' + ip);
+                              ui.addNotification(null, E('p', {}, 'Proxy test OK. Exit IP: ' + ip));
                               return Promise.all([ this.refreshStatus(), this.refreshLogs() ]);
                           }, this))
                           .catch(L.bind(function(err) {
@@ -556,19 +640,93 @@ jobs:
                   });
               },
 
+              // ── Browser section helper ────────────────────────────────────────
+              _makeBrowserSection: function(s) {
+                  var o;
+
+                  // Preset selector — written first in the section
+                  o = s.option(form.ListValue, '_browser_preset', 'Browser profile preset');
+                  BROWSER_PRESETS.forEach(function(p) { o.value(p.id, p.label); });
+                  o.rmempty = true;
+
+                  // Read current UCI to detect active preset
+                  o.cfgvalue = function(section_id) {
+                      var ver  = uci.get('opera-proxy', section_id, 'api_client_version') || '';
+                      var type = uci.get('opera-proxy', section_id, 'api_client_type')    || '';
+                      var ua   = uci.get('opera-proxy', section_id, 'api_user_agent')     || '';
+                      return detectPreset(ver, type, ua);
+                  };
+
+                  // Auto-fill the three fields below when a preset is selected
+                  o.onchange = function(ev, section_id, value) {
+                      var preset = presetById(value);
+                      if (!preset || preset.id === 'custom') return;
+
+                      function fillInput(selector, val) {
+                          var el = document.querySelector(selector);
+                          if (!el) return;
+                          el.value = val || '';
+                          el.dispatchEvent(new Event('input',  { bubbles: true }));
+                          el.dispatchEvent(new Event('change', { bubbles: true }));
+                      }
+                      fillInput('[data-browser-field="api_client_version"] input', preset.version);
+                      fillInput('[data-browser-field="api_client_type"] input',    preset.type);
+                      fillInput('[data-browser-field="api_user_agent"] input',     preset.ua);
+                  };
+
+                  // Preset is a UI-only helper — never write it to UCI
+                  o.write  = function() {};
+                  o.remove = function() {};
+
+                  // Real UCI fields with data-browser-field markers for onchange targeting
+                  function makeField(opt, label, placeholder, desc) {
+                      var f = s.option(form.Value, opt, label);
+                      f.rmempty     = true;
+                      f.placeholder = placeholder;
+                      if (desc) f.description = desc;
+
+                      // Wrap render to inject the data attribute used by onchange
+                      var _render = f.render.bind(f);
+                      f.render = function() {
+                          return Promise.resolve(_render.apply(this, arguments)).then(function(node) {
+                              if (node) {
+                                  node.setAttribute('data-browser-field', opt);
+                                  node.style.borderLeft  = '3px solid #93c5fd';
+                                  node.style.paddingLeft = '8px';
+                                  node.style.marginLeft  = '4px';
+                              }
+                              return node;
+                          });
+                      };
+                      return f;
+                  }
+
+                  makeField('api_client_version', 'Client version',
+                      '(binary default: Stable 114.0.5282.21)',
+                      'Passed as -api-client-version. Leave empty to use the binary built-in default.');
+
+                  makeField('api_client_type', 'Client type',
+                      '(binary default: se0316)',
+                      'Passed as -api-client-type.');
+
+                  makeField('api_user_agent', 'User-Agent string',
+                      '(binary default: OPR/114 UA)',
+                      'Passed as -api-user-agent. Identifies this client to the SurfEasy API.');
+              },
+
               render: function() {
                   var m, s, o;
                   var self = this;
-                  var choices = Array.isArray(this._countryChoices) ? this._countryChoices : [['EU', 'EU']];
 
                   m = new form.Map('opera-proxy', 'Opera Proxy',
-                      'Opera Proxy for OpenWrt with LuCI control panel, compact runtime status, colored mode badge and built-in upstream proxy test.');
+                      'Opera Proxy for OpenWrt — LuCI panel with runtime status, colored mode badge, browser identity spoofing and built-in proxy test.');
 
+                  // ── Live Status ─────────────────────────────────────────────
                   s = m.section(form.TypedSection, 'service', 'Live Status');
                   s.anonymous = true;
 
                   o = s.option(form.DummyValue, '_status', 'Runtime state',
-                      'Shows service state, PID from pidof, current proxy mode, listen address and live memory usage from /proc.');
+                      'Service state, PID, mode, listen address, active browser identity and memory usage.');
                   o.rawhtml = true;
                   o.cfgvalue = function() {
                       return '<div data-opera-proxy-status="1">Loading status...</div>';
@@ -579,15 +737,16 @@ jobs:
                   o.cfgvalue = function() {
                       return [
                           '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">',
-                          '<button type="button" class="btn cbi-button cbi-button-action" data-opera-action="start">Start</button>',
-                          '<button type="button" class="btn cbi-button cbi-button-remove" data-opera-action="stop">Stop</button>',
-                          '<button type="button" class="btn cbi-button cbi-button-action" data-opera-action="restart">Restart</button>',
+                          '<button type="button" class="btn cbi-button cbi-button-action"  data-opera-action="start">Start</button>',
+                          '<button type="button" class="btn cbi-button cbi-button-remove"  data-opera-action="stop">Stop</button>',
+                          '<button type="button" class="btn cbi-button cbi-button-action"  data-opera-action="restart">Restart</button>',
                           '<button type="button" class="btn cbi-button cbi-button-action important" data-opera-action="test">Test proxy</button>',
                           '</div>',
                           '<div data-opera-action-state="1" style="margin-top:8px;min-height:1.4em;color:#6b7280">No action executed yet.</div>'
                       ].join('');
                   };
 
+                  // ── Configuration ───────────────────────────────────────────
                   s = m.section(form.TypedSection, 'service', 'Configuration');
                   s.anonymous = true;
 
@@ -595,67 +754,71 @@ jobs:
                   o.rmempty = false;
 
                   o = s.option(form.ListValue, 'country', 'Country');
-                  choices.forEach(function(item) {
-                      o.value(item[0], item[1]);
+                  (this._countries || []).forEach(function(entry) {
+                      o.value(entry.code, entry.code + ' — ' + entry.name);
                   });
                   o.default = 'EU';
                   o.rmempty = false;
 
                   o = s.option(form.Flag, 'socks_mode', 'SOCKS5 mode');
-                  o.default = '1';
-                  o.rmempty = false;
+                  o.default     = '1';
+                  o.rmempty     = false;
                   o.description = 'Enabled = SOCKS5 proxy. Disabled = HTTP proxy.';
 
                   o = s.option(form.Value, 'bind_address', 'Listen address');
-                  o.datatype = 'hostport';
+                  o.datatype   = 'hostport';
                   o.placeholder = '127.0.0.1:18080';
-                  o.rmempty = false;
+                  o.rmempty    = false;
 
                   o = s.option(form.Value, 'verbosity', 'Verbosity');
                   o.datatype = 'uinteger';
-                  o.default = '20';
-                  o.rmempty = false;
+                  o.default  = '20';
+                  o.rmempty  = false;
 
                   o = s.option(form.Value, 'timeout', 'Request timeout');
-                  o.datatype = 'string';
                   o.placeholder = '10s';
-                  o.rmempty = false;
+                  o.rmempty     = false;
 
                   o = s.option(form.Value, 'refresh', 'Endpoint refresh interval');
-                  o.datatype = 'string';
                   o.placeholder = '4h';
-                  o.rmempty = false;
+                  o.rmempty     = false;
 
                   o = s.option(form.ListValue, 'server_selection', 'Server selection');
                   o.value('fastest', 'fastest');
-                  o.value('random', 'random');
+                  o.value('random',  'random');
+                  o.value('first',   'first');
                   o.default = 'fastest';
                   o.rmempty = false;
 
                   o = s.option(form.Value, 'proxy', 'Upstream proxy');
-                  o.datatype = 'string';
                   o.placeholder = 'socks5://127.0.0.1:1080';
-                  o.rmempty = true;
+                  o.rmempty     = true;
 
                   o = s.option(form.Value, 'api_proxy', 'API proxy');
-                  o.datatype = 'string';
                   o.placeholder = 'http://127.0.0.1:8080';
-                  o.rmempty = true;
+                  o.rmempty     = true;
 
                   o = s.option(form.Value, 'cafile', 'CA file');
-                  o.datatype = 'string';
                   o.placeholder = '/etc/ssl/certs/ca-certificates.crt';
-                  o.rmempty = true;
+                  o.rmempty     = true;
 
                   o = s.option(form.Value, 'fake_sni', 'Fake SNI');
-                  o.datatype = 'string';
                   o.rmempty = true;
 
                   o = s.option(form.Value, 'override_proxy_address', 'Override proxy address');
-                  o.datatype = 'string';
                   o.placeholder = '1.2.3.4:443';
-                  o.rmempty = true;
+                  o.rmempty     = true;
 
+                  // ── Browser Identity ────────────────────────────────────────
+                  s = m.section(form.TypedSection, 'service', 'Browser Identity (Spoofing)');
+                  s.anonymous   = true;
+                  s.description = 'Controls which Opera/Chrome version the proxy reports to the SurfEasy API. ' +
+                      'Choose a preset to auto-fill all three fields, or select "Custom" to type values manually. ' +
+                      'Leave all three fields empty to use the binary built-in defaults (no flags passed).';
+
+                  this._makeBrowserSection(s);
+
+                  // ── Diagnostics ─────────────────────────────────────────────
                   s = m.section(form.TypedSection, 'service', 'Diagnostics');
                   s.anonymous = true;
 
@@ -675,26 +838,23 @@ jobs:
                       ].join('');
                   };
 
+                  // ── Wire up DOM ─────────────────────────────────────────────
                   return m.render().then(function(nodes) {
-                      var btnStart = nodes.querySelector('[data-opera-action="start"]');
-                      var btnStop = nodes.querySelector('[data-opera-action="stop"]');
+                      var btnStart   = nodes.querySelector('[data-opera-action="start"]');
+                      var btnStop    = nodes.querySelector('[data-opera-action="stop"]');
                       var btnRestart = nodes.querySelector('[data-opera-action="restart"]');
-                      var btnTest = nodes.querySelector('[data-opera-action="test"]');
-                      var logBtn = nodes.querySelector('[data-opera-refresh-logs="1"]');
+                      var btnTest    = nodes.querySelector('[data-opera-action="test"]');
+                      var logBtn     = nodes.querySelector('[data-opera-refresh-logs="1"]');
 
                       self._statusNode = nodes.querySelector('[data-opera-proxy-status="1"]');
                       self._actionNode = nodes.querySelector('[data-opera-action-state="1"]');
-                      self._logNode = nodes.querySelector('[data-opera-logs="1"]');
-                      self._buttons = [btnStart, btnStop, btnRestart, btnTest];
+                      self._logNode    = nodes.querySelector('[data-opera-logs="1"]');
+                      self._buttons    = [btnStart, btnStop, btnRestart, btnTest];
 
-                      if (btnStart)
-                          btnStart.addEventListener('click', self.handleServiceAction('start'));
-                      if (btnStop)
-                          btnStop.addEventListener('click', self.handleServiceAction('stop'));
-                      if (btnRestart)
-                          btnRestart.addEventListener('click', self.handleServiceAction('restart'));
-                      if (btnTest)
-                          btnTest.addEventListener('click', self.handleProxyTest());
+                      if (btnStart)   btnStart.addEventListener('click',   self.handleServiceAction('start'));
+                      if (btnStop)    btnStop.addEventListener('click',    self.handleServiceAction('stop'));
+                      if (btnRestart) btnRestart.addEventListener('click', self.handleServiceAction('restart'));
+                      if (btnTest)    btnTest.addEventListener('click',    self.handleProxyTest());
                       if (logBtn) {
                           logBtn.addEventListener('click', function(ev) {
                               ev.preventDefault();
@@ -706,9 +866,7 @@ jobs:
                       self.refreshLogs();
 
                       if (!self._pollRegistered) {
-                          poll.add(function() {
-                              return self.refreshStatus();
-                          }, 8);
+                          poll.add(function() { return self.refreshStatus(); }, 8);
                           self._pollRegistered = true;
                       }
 
@@ -718,15 +876,10 @@ jobs:
 
               handleSaveApply: function(ev, mode) {
                   var self = this;
-
                   return this.super('handleSaveApply', [ev, mode]).then(function(res) {
                       return uci.load('opera-proxy').then(function() {
-                          return Promise.all([
-                              self.refreshStatus(),
-                              self.refreshLogs()
-                          ]).then(function() {
-                              return res;
-                          });
+                          return Promise.all([ self.refreshStatus(), self.refreshLogs() ])
+                              .then(function() { return res; });
                       });
                   });
               }
@@ -754,9 +907,9 @@ jobs:
 
           [ -n "${IPKG_INSTROOT}" ] && exit 0
 
-          /etc/init.d/opera-proxy enable >/dev/null 2>&1 || true
+          /etc/init.d/opera-proxy enable  >/dev/null 2>&1 || true
           /etc/init.d/opera-proxy restart >/dev/null 2>&1 || /etc/init.d/opera-proxy start >/dev/null 2>&1 || true
-          /etc/init.d/rpcd reload >/dev/null 2>&1 || true
+          /etc/init.d/rpcd reload         >/dev/null 2>&1 || true
           rm -f /tmp/luci-indexcache /tmp/luci-modulecache
           exit 0
           EOF
@@ -767,7 +920,7 @@ jobs:
 
           [ -n "${IPKG_INSTROOT}" ] && exit 0
 
-          /etc/init.d/opera-proxy stop >/dev/null 2>&1 || true
+          /etc/init.d/opera-proxy stop    >/dev/null 2>&1 || true
           /etc/init.d/opera-proxy disable >/dev/null 2>&1 || true
           rm -f /tmp/luci-indexcache /tmp/luci-modulecache
           exit 0
@@ -776,7 +929,7 @@ jobs:
           chmod 0755 packaging/postinstall.sh packaging/preremove.sh
 
           ARCHS=("aarch64_generic" "aarch64_cortex-a53")
-          export PKG_DESC="Opera Proxy package for OpenWrt with LuCI interface, SOCKS5-by-default setup, runtime status, colored mode badge and built-in proxy test."
+          export PKG_DESC="Opera Proxy package for OpenWrt with LuCI interface, SOCKS5-by-default setup, runtime status, colored mode badge, browser identity spoofing and built-in proxy test."
 
           export SOURCE_DATE_EPOCH=1704067200
           for ARCH in "${ARCHS[@]}"; do
@@ -832,7 +985,7 @@ jobs:
 
           scripts:
             postinstall: ./packaging/postinstall.sh
-            preremove: ./packaging/preremove.sh
+            preremove:   ./packaging/preremove.sh
           EOF
 
             nfpm package --config nfpm_ipk.yaml --packager ipk --target "${PKG_NAME}_${VERSION}_${ARCH}.ipk"
@@ -890,7 +1043,7 @@ jobs:
 
           scripts:
             postinstall: ./packaging/postinstall.sh
-            preremove: ./packaging/preremove.sh
+            preremove:   ./packaging/preremove.sh
           EOF
 
             nfpm package --config nfpm_apk.yaml --packager apk --target "${PKG_NAME}_${VERSION}_${ARCH}.apk"
@@ -910,9 +1063,7 @@ jobs:
           path: |
             *.ipk
             *.apk
-            ${{
-              env.OUT_BIN
-            }}
+            ${{ env.OUT_BIN }}
             SHA256SUMS.txt
 
       - name: GitHub Release
